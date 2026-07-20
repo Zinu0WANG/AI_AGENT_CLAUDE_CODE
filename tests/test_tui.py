@@ -1,6 +1,7 @@
 import asyncio
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from textual.app import App, ComposeResult
 from textual.widgets import Button, Collapsible, RichLog, Static, TabbedContent, TextArea
@@ -112,7 +113,7 @@ def test_tui_submits_multiline_prompt_once_and_renders_result(tmp_path):
         async with app.run_test() as pilot:
             editor = app.query_one("#prompt", TextArea)
             editor.text = "first line\nsecond line"
-            await pilot.press("ctrl+enter")
+            await pilot.press("f5")
             for _ in range(20):
                 await pilot.pause(0.05)
                 if len(app.query(RunResultView)) == 1:
@@ -120,6 +121,68 @@ def test_tui_submits_multiline_prompt_once_and_renders_result(tmp_path):
             assert model.prompts == ["first line\nsecond line"]
             assert len(app.query(RunResultView)) == 1
             assert editor.text == ""
+
+    asyncio.run(exercise())
+
+
+def test_tui_ctrl_s_also_submits_prompt(tmp_path):
+    async def exercise():
+        model = RecordingModel()
+        app = AgentTUI(workspace=tmp_path, model_client=model)
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).text = "send with control s"
+            await pilot.press("ctrl+s")
+            for _ in range(20):
+                await pilot.pause(0.05)
+                if model.prompts:
+                    break
+            assert model.prompts == ["send with control s"]
+
+    asyncio.run(exercise())
+
+
+def test_tui_uses_terminal_portable_shortcuts():
+    keys = {binding.key for binding in AgentTUI.BINDINGS}
+    assert {"f5", "f6", "f7", "f8", "f10", "ctrl+s", "ctrl+x"} <= keys
+    assert {"ctrl+enter", "e", "c", "ctrl+q"}.isdisjoint(keys)
+
+
+def test_f6_aborts_active_runtime_while_editor_is_focused(tmp_path):
+    async def exercise():
+        class RuntimeStub:
+            aborted = False
+            events = SimpleNamespace(run_id="stub-run")
+
+            def abort(self):
+                self.aborted = True
+
+        app = AgentTUI(workspace=tmp_path, model_client=RecordingModel())
+        async with app.run_test() as pilot:
+            runtime = RuntimeStub()
+            app.current_runtime = runtime
+            app._set_busy(True)
+            app.query_one("#prompt", TextArea).focus()
+            await pilot.press("f6")
+            await pilot.pause()
+            assert runtime.aborted is True
+
+    asyncio.run(exercise())
+
+
+def test_f7_and_f8_toggle_result_details_with_editor_focused(tmp_path):
+    async def exercise():
+        app = AgentTUI(workspace=tmp_path, model_client=RecordingModel())
+        async with app.run_test() as pilot:
+            view = RunResultView(RunResult("keys", "completed", "Done", "", "", 0.1))
+            app.query_one("#chat").mount(view)
+            await pilot.pause()
+            app.query_one("#prompt", TextArea).focus()
+            await pilot.press("f7")
+            await pilot.pause()
+            assert all(not item.collapsed for item in view.query(Collapsible))
+            await pilot.press("f8")
+            await pilot.pause()
+            assert all(item.collapsed for item in view.query(Collapsible))
 
     asyncio.run(exercise())
 
@@ -174,7 +237,9 @@ def test_tui_approval_modal_denies_worker_write(tmp_path):
             for _ in range(30):
                 await pilot.pause(0.05)
                 if isinstance(app.screen, ApprovalScreen):
-                    break
+                    deny = app.screen.query("#deny").first(None)
+                    if deny is not None and deny.region.width > 0:
+                        break
             assert isinstance(app.screen, ApprovalScreen)
             await pilot.click("#deny")
             for _ in range(30):

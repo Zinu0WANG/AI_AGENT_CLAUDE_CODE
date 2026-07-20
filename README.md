@@ -30,9 +30,10 @@ python agent.py
 python agent.py --classic
 ```
 
-TUI 输入框支持直接粘贴多行需求：普通 Enter 换行，`Ctrl+Enter` 一次性提交。
+TUI 输入框支持直接粘贴多行需求：普通 Enter 换行，`F5` 提交，`Ctrl+S` 也可提交。
 任务完成后，最终回答默认显示；Quality Gates 和 Agent Changes 默认折叠，鼠标点击或
-聚焦后按 Enter 展开。按 `E` 展开所有结果详情，按 `C` 全部折叠，按 `Ctrl+X` 中止当前 Run。
+聚焦后按 Enter 展开。按 `F7` 展开所有结果详情，按 `F8` 全部折叠，按 `F6` 或 `Ctrl+X`
+中止当前 Run，按 `F10` 退出。
 
 主界面分为三个页签：`Chat` 只展示需求、回答和折叠结果，`Activity` 展示实时模型、工具与
 队友事件，`Workspace` 展示完整工作区和常用命令。运行期间输入框仍可编辑下一条需求，但在
@@ -119,7 +120,7 @@ Runtime 会要求模型停止重复并重新规划。
 | `/messages [status]` | 查看可靠消息状态 |
 | `/retry-message <id>` | 重新投递未确认消息 |
 
-在 TUI 中按 `Ctrl+Q` 退出；经典模式可使用 `/exit`。
+在 TUI 中按 `F10` 退出；经典模式可使用 `/exit`。
 
 计划模式使用应用层只读工具边界。典型流程：
 

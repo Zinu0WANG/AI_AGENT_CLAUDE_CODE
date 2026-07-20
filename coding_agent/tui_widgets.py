@@ -116,4 +116,10 @@ class ApprovalScreen(ModalScreen[str]):
         self.dismiss(event.button.id or "deny")
 
     def on_mount(self) -> None:
-        self.query_one("#deny", Button).focus()
+        # A modal may receive Mount before its composed children are attached,
+        # especially when it is pushed from a worker-thread callback.
+        self.call_after_refresh(self._focus_default_button)
+
+    def _focus_default_button(self) -> None:
+        deny = self.query_one("#deny", Button)
+        deny.focus()

@@ -11,7 +11,9 @@ from dotenv import load_dotenv
 from rich.table import Table
 from textual import work
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.widgets import (
     Button, Collapsible, Footer, Markdown, RichLog, Static, TabbedContent, TabPane, TextArea,
@@ -65,11 +67,13 @@ class AgentTUI(App[None]):
     TITLE = "Coding Agent"
     SUB_TITLE = "Observable multi-agent runtime"
     BINDINGS = [
-        ("ctrl+enter", "submit_prompt", "Send"),
-        ("ctrl+x", "abort_run", "Stop"),
-        ("e", "expand_all", "Expand details"),
-        ("c", "collapse_all", "Collapse details"),
-        ("ctrl+q", "quit", "Quit"),
+        Binding("f5", "submit_prompt", "Send", priority=True),
+        Binding("ctrl+s", "submit_prompt", "Send", show=False, priority=True),
+        Binding("f6", "abort_run", "Stop", priority=True),
+        Binding("ctrl+x", "abort_run", "Stop", show=False, priority=True),
+        Binding("f7", "expand_all", "Expand details", priority=True),
+        Binding("f8", "collapse_all", "Collapse details", priority=True),
+        Binding("f10", "quit", "Quit", priority=True),
     ]
     CSS = """
     Screen { background: $background; }
@@ -106,6 +110,8 @@ class AgentTUI(App[None]):
         self.last_result: RunResult | None = None
         self.busy = False
         self.run_started_at = 0.0
+        self.status_timer = None
+        self.pending_approvals: set[threading.Event] = set()
 
     def _create_model(self) -> AnthropicModel:
         model_name = os.getenv("MODEL_ID")
@@ -127,7 +133,7 @@ class AgentTUI(App[None]):
             with TabPane("Chat", id="chat-pane"):
                 with VerticalScroll(id="chat"):
                     yield Static(
-                        "Paste a request below. Enter adds a line; Ctrl+Enter sends once.\n"
+                        "Paste a request below. Enter adds a line; F5 or Ctrl+S sends once.\n"
                         "Run details stay compact—open Quality Gates or Agent Changes only when needed.",
                         id="empty-state",
                     )
@@ -136,30 +142,34 @@ class AgentTUI(App[None]):
             with TabPane("Workspace", id="workspace-pane"):
                 yield Static(
                     f"Workspace\n{self.workspace}\n\nModel\n{model_name}\n\n"
-                    "Commands\n/help  /runs  /team  /messages  /plan  /implement  /inspect  /replay",
+                    "Commands\n/help  /runs  /team  /messages  /plan  /implement  /inspect  /replay\n\n"
+                    "Keys\nF5 Send · F6 Stop · F7 Expand · F8 Collapse · F10 Quit",
                     id="workspace-details",
                 )
         with Vertical(id="composer"):
             yield TextArea(id="prompt", language="markdown", show_line_numbers=False, tab_behavior="focus")
             with Horizontal(id="composer-actions"):
-                yield Button("Send  Ctrl+Enter", id="send", variant="primary")
-                yield Button("Stop  Ctrl+X", id="stop", variant="error", disabled=True)
+                yield Button("Send  F5", id="send", variant="primary")
+                yield Button("Stop  F6", id="stop", variant="error", disabled=True)
         yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#prompt", TextArea).focus()
-        self.set_interval(0.25, self._refresh_status)
+        self.status_timer = self.set_interval(0.25, self._refresh_status)
 
     def _refresh_status(self) -> None:
-        if not self.busy:
+        if not self.busy or not self.is_mounted:
             return
         model_name = getattr(self.model, "model", "custom")
         run_id = self.current_runtime.events.run_id[:8] if self.current_runtime else "starting"
         elapsed = max(0.0, time.monotonic() - self.run_started_at) if self.run_started_at else 0.0
-        self.query_one("#status-bar", Static).update(
-            f"Workspace  {self.workspace}    Model  {model_name}    Run  {run_id}    "
-            f"Status  RUNNING    Elapsed  {elapsed:.1f}s"
-        )
+        try:
+            self.query_one("#status-bar", Static).update(
+                f"Workspace  {self.workspace}    Model  {model_name}    Run  {run_id}    "
+                f"Status  RUNNING    Elapsed  {elapsed:.1f}s"
+            )
+        except NoMatches:
+            return
 
     def _set_busy(self, busy: bool) -> None:
         self.busy = busy
@@ -196,9 +206,12 @@ class AgentTUI(App[None]):
 
     def on_live_agent_event(self, message: LiveAgentEvent) -> None:
         event = message.event
-        self.query_one("#timeline", RichLog).write(
-            f"[dim]{event.actor:>10}[/dim]  {_event_summary(event)}"
-        )
+        try:
+            self.query_one("#timeline", RichLog).write(
+                f"[dim]{event.actor:>10}[/dim]  {_event_summary(event)}"
+            )
+        except NoMatches:
+            return
 
     def _runtime_started(self, runtime: AgentRuntime) -> None:
         self.current_runtime = runtime
@@ -217,21 +230,29 @@ class AgentTUI(App[None]):
 
     def _finish_run(self, result: RunResult) -> None:
         self.last_result = result
-        self.query_one("#chat", VerticalScroll).mount(
-            RunResultView(result, len(self.config.lint_commands) + len(self.config.test_commands))
-        )
-        model_name = getattr(self.model, "model", "custom")
-        self.query_one("#status-bar", Static).update(
-            f"Workspace  {self.workspace}    Model  {model_name}    Run  {result.run_id[:8]}    "
-            f"Status  {result.status.upper()}    Duration  {result.duration_seconds:.2f}s"
-        )
-        self._set_busy(False)
-        self.query_one("#prompt", TextArea).focus()
-        self.query_one("#chat", VerticalScroll).scroll_end(animate=False)
+        if not self.is_mounted:
+            return
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+            chat.mount(
+                RunResultView(result, len(self.config.lint_commands) + len(self.config.test_commands))
+            )
+            model_name = getattr(self.model, "model", "custom")
+            self.query_one("#status-bar", Static).update(
+                f"Workspace  {self.workspace}    Model  {model_name}    Run  {result.run_id[:8]}    "
+                f"Status  {result.status.upper()}    Duration  {result.duration_seconds:.2f}s"
+            )
+            self._set_busy(False)
+            self.query_one("#prompt", TextArea).focus()
+            chat.scroll_end(animate=False)
+        except NoMatches:
+            # A worker can finish while the app is already unmounting.
+            return
 
     def _approve(self, name: str, arguments: dict, decision) -> bool:
         resolved = threading.Event()
         choice = {"value": "deny"}
+        self.pending_approvals.add(resolved)
 
         def show_dialog() -> None:
             def receive(value: str | None) -> None:
@@ -241,10 +262,15 @@ class AgentTUI(App[None]):
             self.push_screen(ApprovalScreen(name, arguments, decision, self.workspace), receive)
 
         self.call_from_thread(show_dialog)
-        resolved.wait()
-        if choice["value"] == "allow-all" and self.current_runtime:
-            self.current_runtime.tools.approve_for_run(RiskLevel.WRITE)
-        return choice["value"] in {"allow-once", "allow-all"}
+        try:
+            while not resolved.wait(0.1):
+                if not self.is_running or not self.is_mounted:
+                    return False
+            if choice["value"] == "allow-all" and self.current_runtime:
+                self.current_runtime.tools.approve_for_run(RiskLevel.WRITE)
+            return choice["value"] in {"allow-once", "allow-all"}
+        finally:
+            self.pending_approvals.discard(resolved)
 
     def _output(self, renderable) -> None:
         self.query_one("#chat", VerticalScroll).mount(
@@ -433,6 +459,10 @@ class AgentTUI(App[None]):
             view.collapse_all()
 
     def on_unmount(self) -> None:
+        if self.status_timer:
+            self.status_timer.stop()
+        for approval in tuple(self.pending_approvals):
+            approval.set()
         if self.current_runtime and self.busy:
             self.current_runtime.abort()
 
