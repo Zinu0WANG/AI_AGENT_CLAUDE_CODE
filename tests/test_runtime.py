@@ -36,6 +36,24 @@ def test_fake_model_run_writes_file_records_events_and_validates(tmp_path: Path)
     assert event_types[-1] == "run_completed"
 
 
+def test_runtime_forwards_live_events_to_observer(tmp_path: Path):
+    observed = []
+    runtime = AgentRuntime(
+        tmp_path,
+        AgentConfig(approval_policy="allow_write"),
+        FakeModel([{"stop_reason": "end_turn", "content": [{"type": "text", "text": "Done"}]}]),
+        interactive=False,
+        event_callback=lambda event: observed.append(event.type),
+    )
+
+    result = runtime.run("Do one thing")
+
+    assert result.status == "completed"
+    assert observed[0] == "run_started"
+    assert "model_response" in observed
+    assert observed[-1] == "run_completed"
+
+
 def test_replay_only_reads_events(tmp_path: Path):
     runtime = AgentRuntime(
         tmp_path,

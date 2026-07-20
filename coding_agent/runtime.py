@@ -5,12 +5,12 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .config import AgentConfig
 from .context import RepoMap
 from .context_management import ArtifactStore, ContextManager, ConversationCompactor, MessageCountTrimmer, estimate_tokens
-from .events import EventStore
+from .events import AgentEvent, EventStore
 from .policy import PolicyDecision, RiskLevel
 from .tools import ApprovalCallback, ToolRegistry
 from .team import TeammateManager
@@ -93,7 +93,8 @@ class AgentRuntime:
                  approval_callback: ApprovalCallback | None = None, interactive: bool = True,
                  run_id: str | None = None, enable_team: bool = True,
                  actor: str = "lead", allowed_write_scope: list[str] | None = None,
-                 mode: RunMode = RunMode.ACT):
+                 mode: RunMode = RunMode.ACT,
+                 event_callback: Callable[[AgentEvent], None] | None = None):
         self.workspace = workspace.resolve()
         self.mode = RunMode(mode)
         if self.mode is RunMode.PLAN:
@@ -102,7 +103,8 @@ class AgentRuntime:
             enable_team = False
         self.config = config
         self.model = model_client
-        self.events = EventStore(self.workspace, run_id)
+        self.event_callback = event_callback
+        self.events = EventStore(self.workspace, run_id, event_callback=event_callback)
         self.artifacts = ArtifactStore(self.events.run_dir, self.events)
         self.context = ContextManager(
             self.artifacts, self.events, config.context_keep_tool_batches,
@@ -160,7 +162,7 @@ class AgentRuntime:
             nested_config.approval_policy = "read_only"
         nested = AgentRuntime(self.workspace, nested_config, self.model, self.approval_callback,
                               interactive=False, enable_team=False, actor=actor,
-                              allowed_write_scope=write_scope)
+                              allowed_write_scope=write_scope, event_callback=self.event_callback)
         return nested.run(prompt)
 
     def _execute_tool(self, name: str, arguments: dict) -> str:
@@ -182,7 +184,8 @@ class AgentRuntime:
                 nested_config = AgentConfig(**{field: getattr(self.config, field) for field in self.config.__dataclass_fields__})
                 nested_config.approval_policy = "read_only"
                 nested = AgentRuntime(self.workspace, nested_config, self.model, self.approval_callback,
-                                      interactive=False, enable_team=False, actor="subagent", allowed_write_scope=[])
+                                      interactive=False, enable_team=False, actor="subagent", allowed_write_scope=[],
+                                      event_callback=self.event_callback)
                 result = nested.run(prompt)
             else:
                 write_scope = arguments.get("write_scope")

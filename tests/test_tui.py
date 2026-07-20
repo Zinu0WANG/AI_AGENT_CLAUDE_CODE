@@ -1,10 +1,10 @@
 import asyncio
 
 from textual.app import App, ComposeResult
-from textual.widgets import Collapsible
+from textual.widgets import Collapsible, TextArea
 
 from coding_agent.runtime import RunResult
-from coding_agent.tui import RunResultView, diff_stats, quality_gate_status
+from coding_agent.tui import AgentTUI, RunResultView, diff_stats, quality_gate_status
 
 
 class ResultApp(App):
@@ -20,6 +20,15 @@ class ResultApp(App):
             ),
             quality_commands=1,
         )
+
+
+class TwoResultsApp(App):
+    def compose(self) -> ComposeResult:
+        for run_id in ("run-1", "run-2"):
+            yield RunResultView(
+                RunResult(run_id, "completed", "Done", "", "", 0.1),
+                quality_commands=0,
+            )
 
 
 def test_diff_stats_counts_files_and_changed_lines():
@@ -61,5 +70,45 @@ def test_result_view_expand_and_collapse_actions_toggle_both_panels():
             result_view.collapse_all()
             await pilot.pause()
             assert all(item.collapsed for item in pilot.app.query(Collapsible))
+
+    asyncio.run(exercise())
+
+
+def test_multiple_result_cards_can_coexist():
+    async def exercise():
+        async with TwoResultsApp().run_test() as pilot:
+            await pilot.pause()
+            assert len(pilot.app.query(RunResultView)) == 2
+            assert len(pilot.app.query(Collapsible)) == 4
+
+    asyncio.run(exercise())
+
+
+class RecordingModel:
+    model = "fake-qwen"
+
+    def __init__(self):
+        self.prompts = []
+
+    def create(self, **kwargs):
+        self.prompts.append(kwargs["messages"][0]["content"])
+        return {"stop_reason": "end_turn", "content": [{"type": "text", "text": "Finished"}]}
+
+
+def test_tui_submits_multiline_prompt_once_and_renders_result(tmp_path):
+    async def exercise():
+        model = RecordingModel()
+        app = AgentTUI(workspace=tmp_path, model_client=model)
+        async with app.run_test() as pilot:
+            editor = app.query_one("#prompt", TextArea)
+            editor.text = "first line\nsecond line"
+            app.action_submit_prompt()
+            for _ in range(20):
+                await pilot.pause(0.05)
+                if len(app.query(RunResultView)) == 1:
+                    break
+            assert model.prompts == ["first line\nsecond line"]
+            assert len(app.query(RunResultView)) == 1
+            assert editor.text == ""
 
     asyncio.run(exercise())
