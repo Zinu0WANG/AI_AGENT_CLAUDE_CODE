@@ -34,6 +34,10 @@ TUI 输入框支持直接粘贴多行需求：普通 Enter 换行，`Ctrl+Enter`
 任务完成后，最终回答默认显示；Quality Gates 和 Agent Changes 默认折叠，鼠标点击或
 聚焦后按 Enter 展开。按 `E` 展开所有结果详情，按 `C` 全部折叠，按 `Ctrl+X` 中止当前 Run。
 
+主界面分为三个页签：`Chat` 只展示需求、回答和折叠结果，`Activity` 展示实时模型、工具与
+队友事件，`Workspace` 展示完整工作区和常用命令。运行期间输入框仍可编辑下一条需求，但在
+当前 Run 完成前不会重复提交。
+
 也可以配置兼容 Anthropic Messages API 的服务：
 
 ```dotenv

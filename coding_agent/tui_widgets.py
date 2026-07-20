@@ -38,7 +38,7 @@ class RunResultView(Vertical):
     DEFAULT_CSS = """
     RunResultView { height: auto; margin: 1 0; padding: 0 1; border: round $surface-lighten-2; }
     RunResultView .result-heading { color: $text-muted; margin-top: 1; }
-    RunResultView Markdown { height: auto; max-height: 24; }
+    RunResultView Markdown { height: auto; }
     RunResultView Collapsible { margin-top: 1; }
     """
 

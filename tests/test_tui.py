@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 
 from textual.app import App, ComposeResult
-from textual.widgets import Collapsible, Static, TextArea
+from textual.widgets import Button, Collapsible, RichLog, Static, TabbedContent, TextArea
 
 from coding_agent.policy import PolicyDecision, RiskLevel
 from coding_agent.runtime import RunResult
@@ -261,5 +261,60 @@ def test_running_status_bar_includes_elapsed_time(tmp_path):
             app._refresh_status()
             await pilot.pause()
             assert "Elapsed" in str(app.query_one("#status-bar", Static).render())
+
+    asyncio.run(exercise())
+
+
+def test_compact_layout_preserves_chat_space_at_eighty_by_twenty_four(tmp_path):
+    async def exercise():
+        app = AgentTUI(workspace=tmp_path, model_client=RecordingModel())
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            assert app.query_one("#status-bar").region.height <= 2
+            assert app.query_one("#composer").region.height <= 7
+            assert app.query_one("#chat").region.height >= 10
+            assert len(app.query(TabbedContent)) == 1
+            assert app.query_one("#chat") not in app.query_one("#timeline", RichLog).ancestors
+
+    asyncio.run(exercise())
+
+
+def test_running_keeps_editor_available_for_drafting_next_request(tmp_path):
+    async def exercise():
+        app = AgentTUI(workspace=tmp_path, model_client=RecordingModel())
+        async with app.run_test() as pilot:
+            app._set_busy(True)
+            await pilot.pause()
+            assert app.query_one("#prompt", TextArea).disabled is False
+            assert app.query_one("#send", Button).disabled is True
+            assert app.query_one("#stop", Button).disabled is False
+
+    asyncio.run(exercise())
+
+
+def test_long_answer_is_not_clipped_inside_result_card():
+    async def exercise():
+        answer = "\n\n".join(f"Paragraph {index}: details" for index in range(40))
+
+        class LongResultApp(App):
+            def compose(self) -> ComposeResult:
+                yield RunResultView(RunResult("long-run", "completed", answer, "", "", 0.1))
+
+        async with LongResultApp().run_test(size=(100, 70)) as pilot:
+            await pilot.pause()
+            markdown = pilot.app.query_one(RunResultView).query_one("Markdown")
+            assert markdown.region.height > 24
+
+    asyncio.run(exercise())
+
+
+def test_activity_tab_gives_timeline_full_content_area(tmp_path):
+    async def exercise():
+        app = AgentTUI(workspace=tmp_path, model_client=RecordingModel())
+        async with app.run_test(size=(80, 24)) as pilot:
+            tabs = app.query_one(TabbedContent)
+            tabs.active = "activity-pane"
+            await pilot.pause()
+            assert app.query_one("#timeline", RichLog).region.height >= 10
 
     asyncio.run(exercise())

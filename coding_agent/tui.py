@@ -13,7 +13,9 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
-from textual.widgets import Button, Collapsible, Footer, Markdown, RichLog, Static, TextArea
+from textual.widgets import (
+    Button, Collapsible, Footer, Markdown, RichLog, Static, TabbedContent, TabPane, TextArea,
+)
 
 from .config import AgentConfig
 from .events import AgentEvent, EventStore
@@ -72,19 +74,25 @@ class AgentTUI(App[None]):
     CSS = """
     Screen { background: $background; }
     #status-bar {
-        height: 3;
-        padding: 1 2;
+        height: 2;
+        padding: 0 1;
         background: $surface;
-        color: $text-muted;
+        color: $text;
         border-bottom: solid $primary-darken-2;
+        content-align: left middle;
     }
-    #transcript { height: 1fr; padding: 0 2; }
-    #timeline { height: auto; min-height: 6; max-height: 18; margin: 1 0; }
-    #composer { height: 9; padding: 1 2; background: $surface; }
-    #prompt { height: 6; border: round $primary-darken-1; }
-    #composer-actions { width: 16; height: 6; margin-left: 1; }
-    #composer-actions Button { width: 100%; margin-bottom: 1; }
-    .user-message { border-left: thick $primary; padding: 1 2; margin-top: 1; height: auto; }
+    #main-tabs { height: 1fr; }
+    TabPane { padding: 0; }
+    #chat { height: 1fr; padding: 0 1; }
+    #empty-state { height: auto; padding: 1 1; color: $text-muted; }
+    #timeline { height: 1fr; padding: 1; background: $panel; }
+    #workspace-details { height: 1fr; padding: 1 2; }
+    #composer { height: 7; padding: 0 1; background: $surface; border-top: solid $surface-lighten-2; }
+    #prompt { height: 4; border: round $primary-darken-1; }
+    #composer-actions { width: 1fr; height: 3; align-horizontal: right; }
+    #composer-actions Button { width: 20; margin-left: 1; }
+    .user-message { border-left: thick $primary; padding: 0 1; margin-top: 1; height: auto; }
+    .command-output { height: auto; margin: 1 0; padding: 0 1; }
     """
 
     def __init__(self, workspace: Path | None = None, model_client: ModelClient | None = None):
@@ -114,13 +122,26 @@ class AgentTUI(App[None]):
 
     def compose(self) -> ComposeResult:
         model_name = getattr(self.model, "model", "custom")
-        yield Static(f"Workspace  {self.workspace}    Model  {model_name}    Status  READY", id="status-bar")
-        with VerticalScroll(id="transcript"):
-            yield Static("Enter a request below. Paste multiple lines, then press Ctrl+Enter once to send.")
-            yield RichLog(id="timeline", markup=True, wrap=True, highlight=False)
-        with Horizontal(id="composer"):
+        yield Static(f"CODING AGENT  ·  READY    {self.workspace.name}  ·  {model_name}", id="status-bar")
+        with TabbedContent(id="main-tabs", initial="chat-pane"):
+            with TabPane("Chat", id="chat-pane"):
+                with VerticalScroll(id="chat"):
+                    yield Static(
+                        "Paste a request below. Enter adds a line; Ctrl+Enter sends once.\n"
+                        "Run details stay compact—open Quality Gates or Agent Changes only when needed.",
+                        id="empty-state",
+                    )
+            with TabPane("Activity", id="activity-pane"):
+                yield RichLog(id="timeline", markup=True, wrap=True, highlight=False)
+            with TabPane("Workspace", id="workspace-pane"):
+                yield Static(
+                    f"Workspace\n{self.workspace}\n\nModel\n{model_name}\n\n"
+                    "Commands\n/help  /runs  /team  /messages  /plan  /implement  /inspect  /replay",
+                    id="workspace-details",
+                )
+        with Vertical(id="composer"):
             yield TextArea(id="prompt", language="markdown", show_line_numbers=False, tab_behavior="focus")
-            with Vertical(id="composer-actions"):
+            with Horizontal(id="composer-actions"):
                 yield Button("Send  Ctrl+Enter", id="send", variant="primary")
                 yield Button("Stop  Ctrl+X", id="stop", variant="error", disabled=True)
         yield Footer()
@@ -144,7 +165,6 @@ class AgentTUI(App[None]):
         self.busy = busy
         self.query_one("#send", Button).disabled = busy
         self.query_one("#stop", Button).disabled = not busy
-        self.query_one("#prompt", TextArea).disabled = busy
 
     def action_submit_prompt(self) -> None:
         if self.busy:
@@ -156,7 +176,8 @@ class AgentTUI(App[None]):
             self.notify("Enter a request first.", severity="warning")
             return
         editor.clear()
-        self.query_one("#transcript", VerticalScroll).mount(Static(prompt, classes="user-message"))
+        self.query_one("#empty-state", Static).display = False
+        self.query_one("#chat", VerticalScroll).mount(Static(prompt, classes="user-message"))
         if prompt.startswith("/"):
             self.handle_command(prompt)
             return
@@ -196,7 +217,7 @@ class AgentTUI(App[None]):
 
     def _finish_run(self, result: RunResult) -> None:
         self.last_result = result
-        self.query_one("#transcript", VerticalScroll).mount(
+        self.query_one("#chat", VerticalScroll).mount(
             RunResultView(result, len(self.config.lint_commands) + len(self.config.test_commands))
         )
         model_name = getattr(self.model, "model", "custom")
@@ -206,7 +227,7 @@ class AgentTUI(App[None]):
         )
         self._set_busy(False)
         self.query_one("#prompt", TextArea).focus()
-        self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
+        self.query_one("#chat", VerticalScroll).scroll_end(animate=False)
 
     def _approve(self, name: str, arguments: dict, decision) -> bool:
         resolved = threading.Event()
@@ -226,10 +247,10 @@ class AgentTUI(App[None]):
         return choice["value"] in {"allow-once", "allow-all"}
 
     def _output(self, renderable) -> None:
-        self.query_one("#transcript", VerticalScroll).mount(
+        self.query_one("#chat", VerticalScroll).mount(
             Static(renderable, classes="command-output")
         )
-        self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
+        self.query_one("#chat", VerticalScroll).scroll_end(animate=False)
 
     def _error(self, message: str) -> None:
         self._output(f"ERROR · {message}")
@@ -262,7 +283,7 @@ class AgentTUI(App[None]):
             except ValueError as exc:
                 self._error(str(exc))
             else:
-                self.query_one("#transcript", VerticalScroll).mount(
+                self.query_one("#chat", VerticalScroll).mount(
                     Markdown(plan["plan"], classes="command-output")
                 )
         elif name == "/plan":
