@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from pathlib import Path
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
-from rich.syntax import Syntax
+from rich.table import Table
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -14,99 +16,19 @@ from textual.message import Message
 from textual.widgets import Button, Collapsible, Footer, Markdown, RichLog, Static, TextArea
 
 from .config import AgentConfig
-from .events import AgentEvent
-from .runtime import AgentRuntime, AnthropicModel, ModelClient, RunResult
+from .events import AgentEvent, EventStore
+from .plans import PlanStore
+from .policy import RiskLevel
+from .runtime import AgentRuntime, AnthropicModel, ModelClient, RunMode, RunResult
+from .state import MessageBus, TaskManager
+from .tui_commands import events_table, messages_table, runs_table
+from .tui_widgets import ApprovalScreen, RunResultView, diff_stats, quality_gate_status
 
 
-def diff_stats(diff: str) -> dict[str, int]:
-    """Return display-oriented unified diff counts."""
-    files = sum(line.startswith("diff --git ") for line in diff.splitlines())
-    additions = sum(
-        line.startswith("+") and not line.startswith("+++")
-        for line in diff.splitlines()
-    )
-    deletions = sum(
-        line.startswith("-") and not line.startswith("---")
-        for line in diff.splitlines()
-    )
-    return {"files": files, "additions": additions, "deletions": deletions}
-
-
-def quality_gate_status(validation: str, command_count: int, run_status: str) -> str:
-    if command_count == 0:
-        return "NOT CONFIGURED"
-    if run_status == "completed" and "failed" not in validation.lower():
-        return "PASS"
-    return "FAIL"
-
-
-def _plural(count: int, singular: str) -> str:
-    return f"{count} {singular}{'' if count == 1 else 's'}"
-
-
-class RunResultView(Vertical):
-    """One immutable run result with details hidden until requested."""
-
-    DEFAULT_CSS = """
-    RunResultView {
-        height: auto;
-        margin: 1 0;
-        padding: 0 1;
-        border: round $surface-lighten-2;
-    }
-    RunResultView .result-heading {
-        color: $text-muted;
-        margin-top: 1;
-    }
-    RunResultView Markdown {
-        height: auto;
-        max-height: 24;
-    }
-    RunResultView Collapsible {
-        margin-top: 1;
-    }
-    """
-
-    def __init__(self, result: RunResult, quality_commands: int = 0, **kwargs):
-        super().__init__(**kwargs)
-        self.result = result
-        self.quality_commands = quality_commands
-
-    def compose(self) -> ComposeResult:
-        result = self.result
-        stats = diff_stats(result.diff)
-        gate_status = quality_gate_status(result.validation, self.quality_commands, result.status)
-        yield Static(
-            f"{result.status.upper()}  ·  {result.run_id}  ·  {result.duration_seconds:.2f}s",
-            classes="result-heading",
-        )
-        yield Markdown(result.answer or "_(no final answer)_")
-        with Collapsible(
-            title=f"Quality Gates · {gate_status} · {_plural(self.quality_commands, 'command')}",
-            collapsed=True,
-            id="quality-gates",
-        ):
-            yield Static(result.validation or "No quality gate commands configured.")
-        with Collapsible(
-            title=(
-                f"Agent Changes · {_plural(stats['files'], 'file')} · "
-                f"+{stats['additions']} / -{stats['deletions']}"
-            ),
-            collapsed=True,
-            id="agent-changes",
-        ):
-            if result.diff:
-                yield Static(Syntax(result.diff, "diff", theme="ansi_dark", word_wrap=True))
-            else:
-                yield Static("No code changes in this run.")
-
-    def expand_all(self) -> None:
-        for item in self.query(Collapsible):
-            item.collapsed = False
-
-    def collapse_all(self) -> None:
-        for item in self.query(Collapsible):
-            item.collapsed = True
+SUPPORTED_COMMANDS = {
+    "/plan", "/plans", "/show-plan", "/implement", "/runs", "/inspect", "/replay",
+    "/team", "/messages", "/retry-message", "/diff", "/test", "/abort", "/help",
+}
 
 
 class LiveAgentEvent(Message):
@@ -171,9 +93,11 @@ class AgentTUI(App[None]):
         self.workspace = (workspace or Path.cwd()).resolve()
         self.config = AgentConfig.load(self.workspace)
         self.model = model_client or self._create_model()
+        self.plan_store = PlanStore(self.workspace, self.config.ignore_patterns, self.config.max_file_bytes)
         self.current_runtime: AgentRuntime | None = None
         self.last_result: RunResult | None = None
         self.busy = False
+        self.run_started_at = 0.0
 
     def _create_model(self) -> AnthropicModel:
         model_name = os.getenv("MODEL_ID")
@@ -203,6 +127,18 @@ class AgentTUI(App[None]):
 
     def on_mount(self) -> None:
         self.query_one("#prompt", TextArea).focus()
+        self.set_interval(0.25, self._refresh_status)
+
+    def _refresh_status(self) -> None:
+        if not self.busy:
+            return
+        model_name = getattr(self.model, "model", "custom")
+        run_id = self.current_runtime.events.run_id[:8] if self.current_runtime else "starting"
+        elapsed = max(0.0, time.monotonic() - self.run_started_at) if self.run_started_at else 0.0
+        self.query_one("#status-bar", Static).update(
+            f"Workspace  {self.workspace}    Model  {model_name}    Run  {run_id}    "
+            f"Status  RUNNING    Elapsed  {elapsed:.1f}s"
+        )
 
     def _set_busy(self, busy: bool) -> None:
         self.busy = busy
@@ -221,6 +157,9 @@ class AgentTUI(App[None]):
             return
         editor.clear()
         self.query_one("#transcript", VerticalScroll).mount(Static(prompt, classes="user-message"))
+        if prompt.startswith("/"):
+            self.handle_command(prompt)
+            return
         self.query_one("#timeline", RichLog).write("[bold cyan]USER[/bold cyan]  request submitted")
         self._set_busy(True)
         self._execute_prompt(prompt)
@@ -242,10 +181,8 @@ class AgentTUI(App[None]):
 
     def _runtime_started(self, runtime: AgentRuntime) -> None:
         self.current_runtime = runtime
-        model_name = getattr(self.model, "model", "custom")
-        self.query_one("#status-bar", Static).update(
-            f"Workspace  {self.workspace}    Model  {model_name}    Run  {runtime.events.run_id[:8]}    Status  RUNNING"
-        )
+        self.run_started_at = time.monotonic()
+        self._refresh_status()
 
     @work(thread=True, exclusive=True, group="agent-run")
     def _execute_prompt(self, prompt: str) -> None:
@@ -264,21 +201,202 @@ class AgentTUI(App[None]):
         )
         model_name = getattr(self.model, "model", "custom")
         self.query_one("#status-bar", Static).update(
-            f"Workspace  {self.workspace}    Model  {model_name}    Run  {result.run_id[:8]}    Status  {result.status.upper()}"
+            f"Workspace  {self.workspace}    Model  {model_name}    Run  {result.run_id[:8]}    "
+            f"Status  {result.status.upper()}    Duration  {result.duration_seconds:.2f}s"
         )
         self._set_busy(False)
         self.query_one("#prompt", TextArea).focus()
         self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
 
     def _approve(self, name: str, arguments: dict, decision) -> bool:
-        # The modal approval flow is added in the next increment. Safe default for
-        # TUI writes is denial; allow_write projects never call this callback.
-        self.post_message(LiveAgentEvent(AgentEvent(
-            "approval", self.current_runtime.events.run_id if self.current_runtime else "",
-            0, "approval_requested", "lead",
-            {"tool": name, "risk": decision.risk.value, "arguments": json.dumps(arguments, ensure_ascii=False)},
-        )))
-        return False
+        resolved = threading.Event()
+        choice = {"value": "deny"}
+
+        def show_dialog() -> None:
+            def receive(value: str | None) -> None:
+                choice["value"] = value or "deny"
+                resolved.set()
+
+            self.push_screen(ApprovalScreen(name, arguments, decision, self.workspace), receive)
+
+        self.call_from_thread(show_dialog)
+        resolved.wait()
+        if choice["value"] == "allow-all" and self.current_runtime:
+            self.current_runtime.tools.approve_for_run(RiskLevel.WRITE)
+        return choice["value"] in {"allow-once", "allow-all"}
+
+    def _output(self, renderable) -> None:
+        self.query_one("#transcript", VerticalScroll).mount(
+            Static(renderable, classes="command-output")
+        )
+        self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
+
+    def _error(self, message: str) -> None:
+        self._output(f"ERROR · {message}")
+
+    def handle_command(self, command: str) -> None:
+        parts = command.strip().split(maxsplit=1)
+        name = parts[0].lower()
+        argument = parts[1] if len(parts) > 1 else ""
+        if name not in SUPPORTED_COMMANDS:
+            self._error(f"Unknown command: {name}")
+            return
+        if name == "/help":
+            self._output(" · ".join(sorted(SUPPORTED_COMMANDS)))
+        elif name == "/runs":
+            self._output(runs_table(self.workspace))
+        elif name in {"/inspect", "/replay"}:
+            table = events_table(self.workspace, argument, replay=name == "/replay")
+            self._output(table) if table else self._error(f"Unknown run: {argument}")
+        elif name == "/plans":
+            table = Table("Plan ID", "Status", "Request", "Planning Run", "Implementation Run")
+            for plan in self.plan_store.list_all():
+                table.add_row(
+                    plan.get("plan_id", ""), plan.get("status", ""), plan.get("original_request", "")[:60],
+                    plan.get("planning_run_id", "")[:8], (plan.get("implementation_run_id") or "")[:8],
+                )
+            self._output(table)
+        elif name == "/show-plan":
+            try:
+                plan = self.plan_store.load(argument)
+            except ValueError as exc:
+                self._error(str(exc))
+            else:
+                self.query_one("#transcript", VerticalScroll).mount(
+                    Markdown(plan["plan"], classes="command-output")
+                )
+        elif name == "/plan":
+            if not argument:
+                self._error("Usage: /plan REQUIREMENT")
+            else:
+                self._set_busy(True)
+                self._execute_plan(argument)
+        elif name == "/implement":
+            self._start_implementation(argument)
+        elif name == "/team":
+            self._show_team()
+        elif name == "/messages":
+            bus = MessageBus(self.workspace / ".team" / "team.db", self.config.team_delivery_timeout_seconds)
+            try:
+                self._output(messages_table(bus, argument or None))
+            except ValueError as exc:
+                self._error(str(exc))
+        elif name == "/retry-message":
+            bus = MessageBus(self.workspace / ".team" / "team.db", self.config.team_delivery_timeout_seconds)
+            if not argument:
+                self._error("Usage: /retry-message MESSAGE_ID")
+            else:
+                self._output("Message queued for redelivery." if bus.retry(argument) else "Message not found or already acknowledged.")
+        elif name == "/diff":
+            views = list(self.query(RunResultView))
+            if not views:
+                self._error("No run yet.")
+            else:
+                views[-1].query_one("#agent-changes", Collapsible).collapsed = False
+                views[-1].scroll_visible()
+        elif name == "/test":
+            self._set_busy(True)
+            self._execute_quality_gates()
+        elif name == "/abort":
+            self.action_abort_run()
+
+    def _show_team(self) -> None:
+        if self.current_runtime and self.current_runtime.team:
+            summary = self.current_runtime.team.list_all()
+        else:
+            config_path = self.workspace / ".team" / "config.json"
+            try:
+                team_config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {"team_name": "default", "members": []}
+            except json.JSONDecodeError:
+                team_config = {"team_name": "default", "members": []}
+            summary = "\n".join(
+                [f"Team: {team_config.get('team_name', 'default')}"]
+                + [f"- {member.get('name')} ({member.get('role')}): {member.get('status')} task={member.get('current_task')} scope={member.get('write_scope', [])}"
+                   for member in team_config.get("members", [])]
+            )
+        self._output(summary + "\n\n" + TaskManager(self.workspace / ".tasks").list_all())
+
+    @work(thread=True, exclusive=True, group="agent-run")
+    def _execute_plan(self, request: str) -> None:
+        runtime = AgentRuntime(
+            self.workspace, self.config, self.model, self._approve,
+            interactive=False, enable_team=False, mode=RunMode.PLAN,
+            event_callback=self._post_event,
+        )
+        self.call_from_thread(self._runtime_started, runtime)
+        result = runtime.run(request)
+        if result.status == "planned" and result.answer.strip():
+            selected_files = [
+                event.get("payload", {}).get("path") for event in runtime.events.read_events()
+                if event.get("type") == "context_selected" and event.get("payload", {}).get("path")
+            ]
+            try:
+                plan = self.plan_store.create(request, result.answer, result.run_id, selected_files)
+                runtime.events.emit("plan_created", "lead", {
+                    "plan_id": plan["plan_id"], "selected_files": plan["selected_files"],
+                    "workspace_fingerprint": plan["workspace_fingerprint"], "git_head": plan["git_head"],
+                })
+                result.answer += f"\n\nPlan ID: `{plan['plan_id']}` · execute with `/implement {plan['plan_id']}`"
+            except ValueError as exc:
+                result = RunResult(result.run_id, "failed", str(exc), "", "", result.duration_seconds)
+        self.call_from_thread(self._finish_run, result)
+
+    def _start_implementation(self, plan_id: str) -> None:
+        if not plan_id:
+            self._error("Usage: /implement PLAN_ID")
+            return
+        try:
+            plan = self.plan_store.begin(plan_id)
+        except ValueError as exc:
+            self._error(str(exc))
+            return
+        if plan["status"] == "stale":
+            EventStore(self.workspace, plan["planning_run_id"]).emit(
+                "plan_stale", "lead", {"plan_id": plan_id, "reason": "workspace or Git HEAD changed"},
+            )
+            self._error(f"Plan {plan_id} is stale. Generate a new plan with /plan.")
+            return
+        self._set_busy(True)
+        self._execute_implementation(plan)
+
+    @work(thread=True, exclusive=True, group="agent-run")
+    def _execute_implementation(self, plan: dict) -> None:
+        prompt = (
+            "Implement the approved plan below. Recheck every assumption against the current repository, "
+            "then modify files, run quality gates, and report truthfully.\n\n"
+            f"ORIGINAL REQUEST:\n{plan['original_request']}\n\nAPPROVED PLAN:\n{plan['plan']}"
+        )
+        runtime = AgentRuntime(
+            self.workspace, self.config, self.model, self._approve,
+            mode=RunMode.ACT, event_callback=self._post_event,
+        )
+        self.call_from_thread(self._runtime_started, runtime)
+        runtime.events.emit("plan_implementation_started", "lead", {
+            "plan_id": plan["plan_id"], "planning_run_id": plan["planning_run_id"],
+        })
+        result = runtime.run(prompt)
+        status = "completed" if result.status == "completed" else "failed"
+        self.plan_store.finish(plan["plan_id"], status, result.run_id)
+        runtime.events.emit(
+            "plan_implementation_completed" if status == "completed" else "plan_implementation_failed",
+            "lead", {"plan_id": plan["plan_id"], "planning_run_id": plan["planning_run_id"], "status": result.status},
+        )
+        self.call_from_thread(self._finish_run, result)
+
+    @work(thread=True, exclusive=True, group="agent-run")
+    def _execute_quality_gates(self) -> None:
+        runtime = self.current_runtime or AgentRuntime(
+            self.workspace, self.config, self.model, self._approve,
+            event_callback=self._post_event,
+        )
+        self.call_from_thread(self._runtime_started, runtime)
+        started = time.monotonic()
+        passed, validation = runtime.tools.run_quality_gates()
+        result = RunResult(
+            runtime.events.run_id, "completed" if passed else "failed",
+            "Quality gates completed.", runtime.tools.diff(), validation, time.monotonic() - started,
+        )
+        self.call_from_thread(self._finish_run, result)
 
     def action_abort_run(self) -> None:
         if self.current_runtime and self.busy:

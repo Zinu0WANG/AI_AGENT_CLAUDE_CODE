@@ -13,7 +13,7 @@
 - 修改后自动执行 lint/test；失败结果反馈给 Agent，最多自动修复两轮。
 - Agent 修改前后统一 Diff，不自动 commit、push 或覆盖 Git 历史。
 - 临时子 Agent、具名长期队友、原子任务领取、并发安全 JSONL 信箱和后台命令。
-- Rich 终端界面以及只读历史回放。
+- Textual 全屏终端界面、可折叠 Diff/质量门禁，以及只读历史回放。
 
 ## 安装与启动
 
@@ -23,6 +23,16 @@ Copy-Item .env.example .env
 # 编辑 .env，填写 ANTHROPIC_API_KEY 与 MODEL_ID
 python agent.py
 ```
+
+`python agent.py` 默认启动新版 Textual TUI。旧版 Rich REPL 仍可使用：
+
+```powershell
+python agent.py --classic
+```
+
+TUI 输入框支持直接粘贴多行需求：普通 Enter 换行，`Ctrl+Enter` 一次性提交。
+任务完成后，最终回答默认显示；Quality Gates 和 Agent Changes 默认折叠，鼠标点击或
+聚焦后按 Enter 展开。按 `E` 展开所有结果详情，按 `C` 全部折叠，按 `Ctrl+X` 中止当前 Run。
 
 也可以配置兼容 Anthropic Messages API 的服务：
 
@@ -87,7 +97,7 @@ Runtime 会要求模型停止重复并重新规划。
 
 配置文件中的 lint/test 命令被视为仓库所有者提供的可信命令。模型临时生成的 Shell 命令仍经过策略判断。
 
-## CLI
+## TUI 命令
 
 | 命令 | 作用 |
 |---|---|
@@ -101,7 +111,11 @@ Runtime 会要求模型停止重复并重新规划。
 | `/diff` | 查看最近一次任务产生的修改 |
 | `/test` | 手动运行配置的质量门禁 |
 | `/abort` | 阻止当前 Runtime 发起新的工具调用并保留轨迹 |
-| `/exit` | 退出 |
+| `/team` | 查看队友、任务和写入范围 |
+| `/messages [status]` | 查看可靠消息状态 |
+| `/retry-message <id>` | 重新投递未确认消息 |
+
+在 TUI 中按 `Ctrl+Q` 退出；经典模式可使用 `/exit`。
 
 计划模式使用应用层只读工具边界。典型流程：
 
@@ -115,7 +129,8 @@ Runtime 会要求模型停止重复并重新规划。
 计划保存在 `.plans/<plan_id>.json`。如果生成计划后 Git HEAD、文件列表或文件内容发生变化，
 `/implement` 会将计划标记为 `stale` 并拒绝执行，避免旧计划修改已经变化的代码。
 
-审批提示支持：`y` 仅允许本次、`a` 允许本 Run 后续普通写操作、回车或 `n` 拒绝。危险动作始终默认拒绝。
+TUI 审批窗口支持 Deny、Allow once 和 Allow all writes；经典模式继续使用 `y`、`a` 和 `n`。
+危险动作始终默认拒绝。
 
 ## 面试演示脚本
 
@@ -137,7 +152,7 @@ Runtime 会要求模型停止重复并重新规划。
 ## 架构
 
 ```text
-CLI
+Textual TUI / Classic CLI
  └─ AgentRuntime
      ├─ RepoMap / context selection
      ├─ Model client

@@ -1,10 +1,20 @@
 import asyncio
+import time
+from pathlib import Path
 
 from textual.app import App, ComposeResult
-from textual.widgets import Collapsible, TextArea
+from textual.widgets import Collapsible, Static, TextArea
 
+from coding_agent.policy import PolicyDecision, RiskLevel
 from coding_agent.runtime import RunResult
-from coding_agent.tui import AgentTUI, RunResultView, diff_stats, quality_gate_status
+from coding_agent.tui import (
+    SUPPORTED_COMMANDS,
+    AgentTUI,
+    ApprovalScreen,
+    RunResultView,
+    diff_stats,
+    quality_gate_status,
+)
 
 
 class ResultApp(App):
@@ -102,7 +112,7 @@ def test_tui_submits_multiline_prompt_once_and_renders_result(tmp_path):
         async with app.run_test() as pilot:
             editor = app.query_one("#prompt", TextArea)
             editor.text = "first line\nsecond line"
-            app.action_submit_prompt()
+            await pilot.press("ctrl+enter")
             for _ in range(20):
                 await pilot.pause(0.05)
                 if len(app.query(RunResultView)) == 1:
@@ -110,5 +120,146 @@ def test_tui_submits_multiline_prompt_once_and_renders_result(tmp_path):
             assert model.prompts == ["first line\nsecond line"]
             assert len(app.query(RunResultView)) == 1
             assert editor.text == ""
+
+    asyncio.run(exercise())
+
+
+def test_tui_recognizes_every_classic_slash_command():
+    assert SUPPORTED_COMMANDS == {
+        "/plan", "/plans", "/show-plan", "/implement", "/runs", "/inspect", "/replay",
+        "/team", "/messages", "/retry-message", "/diff", "/test", "/abort", "/help",
+    }
+
+
+def test_slash_command_is_rendered_without_calling_model(tmp_path):
+    async def exercise():
+        model = RecordingModel()
+        app = AgentTUI(workspace=tmp_path, model_client=model)
+        async with app.run_test() as pilot:
+            editor = app.query_one("#prompt", TextArea)
+            editor.text = "/runs"
+            app.action_submit_prompt()
+            await pilot.pause()
+            assert model.prompts == []
+            assert len(app.query(".command-output")) == 1
+
+    asyncio.run(exercise())
+
+
+class ApprovalModel:
+    model = "fake-qwen"
+
+    def __init__(self):
+        self.call = 0
+
+    def create(self, **_kwargs):
+        self.call += 1
+        if self.call == 1:
+            return {
+                "stop_reason": "tool_use",
+                "content": [{
+                    "type": "tool_use", "id": "write-1", "name": "write_file",
+                    "input": {"path": "denied.txt", "content": "no"},
+                }],
+            }
+        return {"stop_reason": "end_turn", "content": [{"type": "text", "text": "Denied safely"}]}
+
+
+def test_tui_approval_modal_denies_worker_write(tmp_path):
+    async def exercise():
+        app = AgentTUI(workspace=tmp_path, model_client=ApprovalModel())
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).text = "Try a write"
+            app.action_submit_prompt()
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, ApprovalScreen):
+                    break
+            assert isinstance(app.screen, ApprovalScreen)
+            await pilot.click("#deny")
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if len(app.query(RunResultView)) == 1:
+                    break
+            assert not (tmp_path / "denied.txt").exists()
+            assert len(app.query(RunResultView)) == 1
+
+    asyncio.run(exercise())
+
+
+def test_approval_screen_exposes_risk_and_three_choices():
+    screen = ApprovalScreen(
+        "write_file", {"path": "app.py"},
+        PolicyDecision(RiskLevel.WRITE, "modifies a workspace file"),
+        Path("C:/workspace"),
+    )
+    assert screen.tool_name == "write_file"
+    assert screen.decision.risk is RiskLevel.WRITE
+
+
+def test_approval_screen_returns_each_button_choice(tmp_path):
+    async def exercise(button_id: str):
+        results = []
+
+        class ApprovalHost(App):
+            def on_mount(self):
+                self.push_screen(
+                    ApprovalScreen(
+                        "write_file", {"path": "app.py"},
+                        PolicyDecision(RiskLevel.WRITE, "workspace write"), tmp_path,
+                    ),
+                    lambda value: results.append(value),
+                )
+
+        async with ApprovalHost().run_test() as pilot:
+            await pilot.pause()
+            await pilot.click(f"#{button_id}")
+            await pilot.pause()
+            assert results == [button_id]
+
+    for button_id in ("deny", "allow-once", "allow-all"):
+        asyncio.run(exercise(button_id))
+
+
+PLAN_TEXT = "\n".join([
+    "## 目标与验收标准", "## 仓库现状", "## 实施步骤",
+    "## 预计修改文件及原因", "## 测试方案", "## 风险与假设",
+])
+
+
+class PlanModel:
+    model = "fake-qwen"
+
+    def create(self, **_kwargs):
+        return {"stop_reason": "end_turn", "content": [{"type": "text", "text": PLAN_TEXT}]}
+
+
+def test_tui_plan_command_persists_ready_plan(tmp_path):
+    async def exercise():
+        app = AgentTUI(workspace=tmp_path, model_client=PlanModel())
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).text = "/plan improve calculator"
+            app.action_submit_prompt()
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if app.plan_store.list_all():
+                    break
+            plans = app.plan_store.list_all()
+            assert len(plans) == 1
+            assert plans[0]["status"] == "ready"
+            assert plans[0]["original_request"] == "improve calculator"
+
+    asyncio.run(exercise())
+
+
+def test_running_status_bar_includes_elapsed_time(tmp_path):
+    async def exercise():
+        app = AgentTUI(workspace=tmp_path, model_client=RecordingModel())
+        async with app.run_test() as pilot:
+            app.busy = True
+            app.run_started_at = time.monotonic() - 1.0
+            app._refresh_status()
+            await pilot.pause()
+            assert "Elapsed" in str(app.query_one("#status-bar", Static).render())
 
     asyncio.run(exercise())
