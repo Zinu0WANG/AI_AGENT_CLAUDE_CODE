@@ -6,7 +6,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass(slots=True)
@@ -20,13 +20,15 @@ class AgentEvent:
 
 
 class EventStore:
-    def __init__(self, workspace: Path, run_id: str | None = None):
+    def __init__(self, workspace: Path, run_id: str | None = None,
+                 event_callback: Callable[[AgentEvent], None] | None = None):
         self.root = workspace / ".runs"
         self.run_id = run_id or str(uuid.uuid4())
         self.run_dir = self.root / self.run_id
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.events_path = self.run_dir / "events.jsonl"
         self._lock = threading.Lock()
+        self.event_callback = event_callback
 
     def emit(self, event_type: str, actor: str = "lead", payload: dict | None = None) -> AgentEvent:
         event = AgentEvent(str(uuid.uuid4()), self.run_id, time.time(), event_type, actor, payload or {})
@@ -35,6 +37,12 @@ class EventStore:
             with self.events_path.open("a", encoding="utf-8") as stream:
                 stream.write(line + "\n")
                 stream.flush()
+        if self.event_callback:
+            try:
+                self.event_callback(event)
+            except Exception:
+                # Observers are presentation concerns and must never break a run.
+                pass
         return event
 
     def read_events(self) -> list[dict]:
@@ -82,5 +90,6 @@ class EventStore:
             store = cls.__new__(cls)
             store.root, store.run_id, store.run_dir, store.events_path = root, directory.name, directory, path
             store._lock = threading.Lock()
+            store.event_callback = None
             runs.append(store.summary())
         return runs

@@ -68,6 +68,28 @@ def test_event_store_round_trips_and_tolerates_corrupt_lines(tmp_path: Path):
     assert loaded[-1]["type"] == "corrupt_event"
 
 
+def test_event_store_notifies_after_persisting_event(tmp_path: Path):
+    observed = []
+
+    def callback(event):
+        observed.append((event.type, store.read_events()[-1]["event_id"]))
+
+    store = EventStore(tmp_path, run_id="live-run", event_callback=callback)
+    event = store.emit("tool_started", actor="lead", payload={"tool": "read_file"})
+
+    assert observed == [("tool_started", event.event_id)]
+
+
+def test_event_store_callback_failure_does_not_break_persistence(tmp_path: Path):
+    def callback(_event):
+        raise RuntimeError("UI closed")
+
+    store = EventStore(tmp_path, run_id="callback-failure", event_callback=callback)
+    event = store.emit("run_started")
+
+    assert store.read_events()[0]["event_id"] == event.event_id
+
+
 @pytest.mark.parametrize(
     ("command", "risk"),
     [
