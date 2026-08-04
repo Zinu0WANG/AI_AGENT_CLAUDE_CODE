@@ -32,6 +32,27 @@ def test_plan_store_persists_plan_and_ignores_internal_runtime_files(tmp_path: P
     assert store.workspace_fingerprint() != original
 
 
+def test_plan_store_fingerprint_ignores_nested_generated_caches(tmp_path: Path):
+    (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
+    store = PlanStore(
+        tmp_path,
+        [".plans/**", ".pytest_cache/**", "__pycache__/**"],
+    )
+    original = store.workspace_fingerprint()
+
+    generated = [
+        tmp_path / ".pytest_cache" / "v" / "cache" / "nodeids",
+        tmp_path / "packages" / "api" / ".pytest_cache" / "README.md",
+        tmp_path / "__pycache__" / "root.pyc",
+        tmp_path / "tests" / "__pycache__" / "nested.pyc",
+    ]
+    for path in generated:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x00generated")
+
+    assert store.workspace_fingerprint() == original
+
+
 def test_plan_store_allows_only_one_atomic_begin(tmp_path: Path):
     store = PlanStore(tmp_path, [".plans/**"])
     plan = store.create("request", PLAN_TEXT, "planning-run", [])

@@ -8,6 +8,8 @@ import time
 import uuid
 from pathlib import Path
 
+from .security import SecretRedactor
+
 
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _LOCK_REGISTRY_GUARD = threading.Lock()
@@ -36,6 +38,7 @@ class MessageBus:
         self.database.parent.mkdir(parents=True, exist_ok=True)
         self.delivery_timeout = delivery_timeout
         self.event_callback = event_callback
+        self.redactor = SecretRedactor()
         self._initialize()
         if legacy_inbox_dir:
             self._import_legacy(legacy_inbox_dir)
@@ -82,6 +85,7 @@ class MessageBus:
         task_id = task_id if task_id is not None else extra.get("task_id")
         conversation_id = conversation_id or extra.get("conversation_id") or str(uuid.uuid4())
         message_id = str(uuid.uuid4())
+        content = self.redactor.value(content)
         serialized = json.dumps(content, ensure_ascii=False, default=str)
         if len(serialized) > 50_000:
             serialized = json.dumps({"truncated": True, "preview": serialized[:48_000]}, ensure_ascii=False)

@@ -13,7 +13,7 @@
 - 修改后自动执行 lint/test；失败结果反馈给 Agent，最多自动修复两轮。
 - Agent 修改前后统一 Diff，不自动 commit、push 或覆盖 Git 历史。
 - 临时子 Agent、具名长期队友、原子任务领取、并发安全 JSONL 信箱和后台命令。
-- Textual 全屏终端界面、可折叠 Diff/质量门禁，以及只读历史回放。
+- Rich 终端界面以及只读历史回放。
 
 ## 安装与启动
 
@@ -23,21 +23,6 @@ Copy-Item .env.example .env
 # 编辑 .env，填写 ANTHROPIC_API_KEY 与 MODEL_ID
 python agent.py
 ```
-
-`python agent.py` 默认启动新版 Textual TUI。旧版 Rich REPL 仍可使用：
-
-```powershell
-python agent.py --classic
-```
-
-TUI 输入框支持直接粘贴多行需求：普通 Enter 换行，`F5` 提交，`Ctrl+S` 也可提交。
-任务完成后，最终回答默认显示；Quality Gates 和 Agent Changes 默认折叠，鼠标点击或
-聚焦后按 Enter 展开。按 `F7` 展开所有结果详情，按 `F8` 全部折叠，按 `F6` 或 `Ctrl+X`
-中止当前 Run，按 `F10` 退出。
-
-主界面分为三个页签：`Chat` 只展示需求、回答和折叠结果，`Activity` 展示实时模型、工具与
-队友事件，`Workspace` 展示完整工作区和常用命令。运行期间输入框仍可编辑下一条需求，但在
-当前 Run 完成前不会重复提交。
 
 也可以配置兼容 Anthropic Messages API 的服务：
 
@@ -94,7 +79,31 @@ team_session_summary_tokens: 2000
 team_require_write_scope: true
 model_max_output_tokens: 3000
 no_progress_replan_after: 3
+tool_security:
+  protected_read_patterns:
+    - .env
+    - .env.*
+    - "**/*.pem"
+    - "**/*.key"
+    - "**/credentials*"
+    - "**/.ssh/**"
+  protected_write_patterns:
+    - ".git/**"
+    - ".runs/**"
+    - ".team/**"
+    - ".tasks/**"
+    - .agent.yml
+  l1_rate_limit: 120
+  l2_rate_limit: 30
+  l3_rate_limit: 5
+  max_command_timeout: 300
+  max_tool_output_bytes: 100000
+  max_file_content_bytes: 1048576
 ```
+
+### 工具调用安全
+
+工具由 Pydantic 模型同时生成 JSON Schema 并执行运行时强校验。主 Agent 使用 `lead` 权限；子 Agent 使用不可由 Prompt 修改的 `worker` 权限，只能看到只读工具和写入范围内的编辑工具。L1 调用自动执行，L2 调用受审批策略、写入范围、审计和限流控制，Shell 等 L3 调用必须逐次人工确认；删除、联网、安装依赖、Git 破坏操作和敏感凭据访问默认拒绝。工具参数、输出、Artifact、团队消息和事件日志会统一进行密钥脱敏。
 
 为减少模型往返，Agent 会优先使用 `read_files` 批量读取候选文件，并使用 `batch_edit`
 在全部替换预检通过后批量修改。未发生变化的文件会返回缓存引用；连续 3 轮完全重复工具调用时，
@@ -102,7 +111,7 @@ Runtime 会要求模型停止重复并重新规划。
 
 配置文件中的 lint/test 命令被视为仓库所有者提供的可信命令。模型临时生成的 Shell 命令仍经过策略判断。
 
-## TUI 命令
+## CLI
 
 | 命令 | 作用 |
 |---|---|
@@ -116,11 +125,7 @@ Runtime 会要求模型停止重复并重新规划。
 | `/diff` | 查看最近一次任务产生的修改 |
 | `/test` | 手动运行配置的质量门禁 |
 | `/abort` | 阻止当前 Runtime 发起新的工具调用并保留轨迹 |
-| `/team` | 查看队友、任务和写入范围 |
-| `/messages [status]` | 查看可靠消息状态 |
-| `/retry-message <id>` | 重新投递未确认消息 |
-
-在 TUI 中按 `F10` 退出；经典模式可使用 `/exit`。
+| `/exit` | 退出 |
 
 计划模式使用应用层只读工具边界。典型流程：
 
@@ -134,8 +139,7 @@ Runtime 会要求模型停止重复并重新规划。
 计划保存在 `.plans/<plan_id>.json`。如果生成计划后 Git HEAD、文件列表或文件内容发生变化，
 `/implement` 会将计划标记为 `stale` 并拒绝执行，避免旧计划修改已经变化的代码。
 
-TUI 审批窗口支持 Deny、Allow once 和 Allow all writes；经典模式继续使用 `y`、`a` 和 `n`。
-危险动作始终默认拒绝。
+审批提示支持：`y` 仅允许本次、`a` 允许本 Run 后续普通写操作、回车或 `n` 拒绝。危险动作始终默认拒绝。
 
 ## 面试演示脚本
 
@@ -157,7 +161,7 @@ TUI 审批窗口支持 Deny、Allow once 和 Allow all writes；经典模式继�
 ## 架构
 
 ```text
-Textual TUI / Classic CLI
+CLI
  └─ AgentRuntime
      ├─ RepoMap / context selection
      ├─ Model client

@@ -1,0 +1,209 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-30T09:26:46.836408+00:00",
+  "environment": {
+    "python": "3.13.14",
+    "platform": "Windows-11-10.0.22621-SP0"
+  },
+  "configuration": {
+    "repeats": 7,
+    "files": 1000,
+    "uses_real_model": false,
+    "label": "post-fix-optimized"
+  },
+  "metrics": [
+    {
+      "name": "repo_map_cold",
+      "repeats": 7,
+      "mean_ms": 461.965,
+      "p50_ms": 460.851,
+      "p95_ms": 487.231,
+      "min_ms": 430.457,
+      "max_ms": 487.998,
+      "peak_traced_kib": 2734.9,
+      "samples_ms": [
+        485.441,
+        483.461,
+        443.895,
+        430.457,
+        487.998,
+        441.654,
+        460.851
+      ]
+    },
+    {
+      "name": "repo_map_warm",
+      "repeats": 7,
+      "mean_ms": 341.45,
+      "p50_ms": 334.887,
+      "p95_ms": 369.235,
+      "min_ms": 311.117,
+      "max_ms": 370.212,
+      "peak_traced_kib": 1951.3,
+      "samples_ms": [
+        332.973,
+        311.117,
+        370.212,
+        334.887,
+        327.751,
+        366.955,
+        346.254
+      ]
+    },
+    {
+      "name": "event_store_500_appends",
+      "repeats": 7,
+      "mean_ms": 130.067,
+      "p50_ms": 126.067,
+      "p95_ms": 146.665,
+      "min_ms": 116.892,
+      "max_ms": 150.052,
+      "peak_traced_kib": 804.4,
+      "samples_ms": [
+        150.052,
+        134.665,
+        125.148,
+        118.885,
+        116.892,
+        126.067,
+        138.763
+      ]
+    },
+    {
+      "name": "policy_6000_classifications",
+      "repeats": 7,
+      "mean_ms": 120.033,
+      "p50_ms": 120.001,
+      "p95_ms": 137.985,
+      "min_ms": 100.012,
+      "max_ms": 140.643,
+      "peak_traced_kib": 5.7,
+      "samples_ms": [
+        108.996,
+        100.012,
+        112.004,
+        131.784,
+        126.794,
+        120.001,
+        140.643
+      ]
+    },
+    {
+      "name": "message_bus_200_round_trips",
+      "repeats": 7,
+      "mean_ms": 258.128,
+      "p50_ms": 257.504,
+      "p95_ms": 275.629,
+      "min_ms": 245.826,
+      "max_ms": 278.988,
+      "peak_traced_kib": 437.4,
+      "samples_ms": [
+        257.504,
+        278.988,
+        267.792,
+        260.807,
+        248.08,
+        247.894,
+        245.826
+      ]
+    },
+    {
+      "name": "batch_read_50_files_cold",
+      "repeats": 7,
+      "mean_ms": 135.668,
+      "p50_ms": 128.739,
+      "p95_ms": 151.206,
+      "min_ms": 126.249,
+      "max_ms": 151.517,
+      "peak_traced_kib": 220.7,
+      "samples_ms": [
+        151.517,
+        128.739,
+        128.219,
+        126.249,
+        127.416,
+        137.054,
+        150.48
+      ]
+    },
+    {
+      "name": "batch_read_50_files_cached",
+      "repeats": 7,
+      "mean_ms": 47.645,
+      "p50_ms": 47.979,
+      "p95_ms": 54.547,
+      "min_ms": 42.892,
+      "max_ms": 56.025,
+      "peak_traced_kib": 27.4,
+      "samples_ms": [
+        43.648,
+        42.892,
+        47.979,
+        43.318,
+        56.025,
+        48.55,
+        51.099
+      ]
+    },
+    {
+      "name": "batch_edit_100_files_atomic",
+      "repeats": 1,
+      "mean_ms": 93.253,
+      "p50_ms": 93.253,
+      "p95_ms": 93.253,
+      "min_ms": 93.253,
+      "max_ms": 93.253,
+      "peak_traced_kib": 114.9,
+      "samples_ms": [
+        93.253
+      ]
+    },
+    {
+      "name": "fake_model_runtime_end_to_end",
+      "repeats": 7,
+      "mean_ms": 93.286,
+      "p50_ms": 86.462,
+      "p95_ms": 115.296,
+      "min_ms": 82.604,
+      "max_ms": 116.399,
+      "peak_traced_kib": 78.3,
+      "samples_ms": [
+        86.462,
+        87.005,
+        84.223,
+        83.59,
+        82.604,
+        116.399,
+        112.721
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "name": "policy_blocks_known_dangerous_inputs",
+      "passed": true,
+      "details": "3 dangerous commands and 1 path traversal checked"
+    },
+    {
+      "name": "batch_edit_applies_all_valid_edits",
+      "passed": true,
+      "details": "100 files checked"
+    },
+    {
+      "name": "batch_edit_rolls_back_invalid_batch",
+      "passed": true,
+      "details": "earlier valid edit remained unapplied after a later invalid edit"
+    },
+    {
+      "name": "batch_read_returned_content",
+      "passed": true,
+      "details": "output_length=6023"
+    },
+    {
+      "name": "fake_runtime_completion_quality",
+      "passed": true,
+      "details": "7/7 runs completed with the expected file and terminal event"
+    }
+  ],
+  "passed": true
+}

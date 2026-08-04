@@ -4,7 +4,7 @@ lint_commands: []
 ignore_patterns:
   - .venv/**
   - build/**
-approval_policy: allow_write
+approval_policy: ask_on_write
 max_steps: 40
 context_keep_tool_batches: 3
 artifact_threshold_tokens: 1000
@@ -24,6 +24,26 @@ team_message_token_limit: 4000
 team_delivery_timeout_seconds: 60
 team_session_recent_messages: 12
 team_session_summary_tokens: 2000
-team_require_write_scope: false
+team_require_write_scope: true
 model_max_output_tokens: 3000
 no_progress_replan_after: 3
+tool_security:
+  protected_read_patterns:
+    - .env
+    - .env.*
+    - "**/*.pem"
+    - "**/*.key"
+    - "**/credentials*"
+    - "**/.ssh/**"
+  protected_write_patterns:
+    - ".git/**"
+    - ".runs/**"
+    - ".team/**"
+    - ".tasks/**"
+    - .agent.yml
+  l1_rate_limit: 120
+  l2_rate_limit: 30
+  l3_rate_limit: 5
+  max_command_timeout: 300
+  max_tool_output_bytes: 100000
+  max_file_content_bytes: 1048576

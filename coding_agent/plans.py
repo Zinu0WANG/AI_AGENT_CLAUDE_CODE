@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import json
 import re
@@ -9,6 +8,8 @@ import threading
 import time
 import uuid
 from pathlib import Path
+
+from .context import is_path_ignored
 
 
 PLAN_ID_PATTERN = re.compile(r"^[0-9a-f]{8}$")
@@ -45,11 +46,7 @@ class PlanStore:
         return self.root / f"{self._validate_id(plan_id)}.json"
 
     def _ignored(self, relative: str) -> bool:
-        normalized = relative.replace("\\", "/")
-        return any(
-            fnmatch.fnmatch(normalized, pattern) or fnmatch.fnmatch(normalized + "/", pattern)
-            for pattern in self.ignore_patterns
-        )
+        return is_path_ignored(relative, self.ignore_patterns)
 
     def workspace_fingerprint(self) -> str:
         digest = hashlib.sha256()

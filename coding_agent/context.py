@@ -16,6 +16,39 @@ LANGUAGES = {
 KEY_CONFIGS = {"pyproject.toml", "requirements.txt", "package.json", "Cargo.toml", "go.mod", ".agent.yml"}
 
 
+def is_path_ignored(relative: str, patterns: list[str]) -> bool:
+    """Match unanchored ignore patterns at the workspace root or any depth."""
+    normalized = relative.replace("\\", "/").strip("/")
+    if not normalized:
+        return False
+    parts = normalized.split("/")
+    for raw_pattern in patterns:
+        pattern = raw_pattern.replace("\\", "/")
+        anchored = pattern.startswith("/")
+        pattern = pattern.lstrip("/")
+        directory = pattern[:-3].rstrip("/") if pattern.endswith("/**") else ""
+        if directory and not any(character in directory for character in "*?["):
+            if "/" not in directory:
+                directory_parts = parts[:1] if anchored else parts[:-1]
+                if directory in directory_parts:
+                    return True
+                continue
+            candidates = [normalized] if anchored else [
+                "/".join(parts[index:]) for index in range(len(parts) - 1)
+            ]
+            if any(candidate.startswith(directory + "/") for candidate in candidates):
+                return True
+            continue
+        if fnmatch.fnmatch(normalized, pattern) or fnmatch.fnmatch(normalized + "/", pattern):
+            return True
+        if not anchored:
+            for index in range(1, len(parts)):
+                candidate = "/".join(parts[index:])
+                if fnmatch.fnmatch(candidate, pattern) or fnmatch.fnmatch(candidate + "/", pattern):
+                    return True
+    return False
+
+
 class RepoMap:
     def __init__(self, workspace: Path, ignore_patterns: list[str] | None = None, max_file_bytes: int = 250_000):
         self.workspace = workspace.resolve()
@@ -24,8 +57,7 @@ class RepoMap:
         self.cache_path = self.workspace / ".runs" / "repo-map-cache.json"
 
     def _ignored(self, relative: str) -> bool:
-        normalized = relative.replace("\\", "/")
-        return any(fnmatch.fnmatch(normalized, pattern) or fnmatch.fnmatch(normalized + "/", pattern) for pattern in self.ignore_patterns)
+        return is_path_ignored(relative, self.ignore_patterns)
 
     def _python_symbols(self, path: Path) -> list[str]:
         try:

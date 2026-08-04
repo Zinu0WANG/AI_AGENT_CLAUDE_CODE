@@ -100,6 +100,7 @@ class ArtifactStore:
 
     def create(self, tool: str, content: str, status: str, estimated: int | None = None,
                *, kind: str = "tool_result", details: dict | None = None) -> ArtifactMetadata:
+        content = self.events.redact_text(content)
         encoded = content.encode("utf-8")
         digest = hashlib.sha256(encoded).hexdigest()
         with self._lock:
