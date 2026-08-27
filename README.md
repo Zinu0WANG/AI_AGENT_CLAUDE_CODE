@@ -179,6 +179,8 @@ python -m pytest -q
 python -m compileall -q agent.py coding_agent
 ```
 
+第一条命令运行完整测试套件，第二条命令快速检查 Python 模块语法。
+
 测试覆盖配置、事件损坏恢复、路径穿越、命令风险、RepoMap、并发信箱、原子任务认领、Fake Model 端到端运行、危险命令拒绝、审批拒绝、质量门禁重试、只读回放，以及大型工具结果的外置、搜索和分页取回。
 
 ## 运行数据
