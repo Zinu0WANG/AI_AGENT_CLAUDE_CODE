@@ -183,6 +183,8 @@ python -m compileall -q agent.py coding_agent
 
 ## 运行数据
 
+这些运行数据仅用于本地状态管理，不应作为项目源代码提交。
+
 以下目录是本地运行状态，默认被 Git 忽略：
 
 - `.runs/`：轨迹、RepoMap 缓存。
