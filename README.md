@@ -79,7 +79,31 @@ team_session_summary_tokens: 2000
 team_require_write_scope: true
 model_max_output_tokens: 3000
 no_progress_replan_after: 3
+tool_security:
+  protected_read_patterns:
+    - .env
+    - .env.*
+    - "**/*.pem"
+    - "**/*.key"
+    - "**/credentials*"
+    - "**/.ssh/**"
+  protected_write_patterns:
+    - ".git/**"
+    - ".runs/**"
+    - ".team/**"
+    - ".tasks/**"
+    - .agent.yml
+  l1_rate_limit: 120
+  l2_rate_limit: 30
+  l3_rate_limit: 5
+  max_command_timeout: 300
+  max_tool_output_bytes: 100000
+  max_file_content_bytes: 1048576
 ```
+
+### 工具调用安全
+
+工具由 Pydantic 模型同时生成 JSON Schema 并执行运行时强校验。主 Agent 使用 `lead` 权限；子 Agent 使用不可由 Prompt 修改的 `worker` 权限，只能看到只读工具和写入范围内的编辑工具。L1 调用自动执行，L2 调用受审批策略、写入范围、审计和限流控制，Shell 等 L3 调用必须逐次人工确认；删除、联网、安装依赖、Git 破坏操作和敏感凭据访问默认拒绝。工具参数、输出、Artifact、团队消息和事件日志会统一进行密钥脱敏。
 
 为减少模型往返，Agent 会优先使用 `read_files` 批量读取候选文件，并使用 `batch_edit`
 在全部替换预检通过后批量修改。未发生变化的文件会返回缓存引用；连续 3 轮完全重复工具调用时，

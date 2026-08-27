@@ -8,6 +8,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .security import SecretRedactor
+
 
 @dataclass(slots=True)
 class AgentEvent:
@@ -27,9 +29,14 @@ class EventStore:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.events_path = self.run_dir / "events.jsonl"
         self._lock = threading.Lock()
+        self.redactor = SecretRedactor()
+
+    def redact_text(self, value: str) -> str:
+        return self.redactor.text(value)
 
     def emit(self, event_type: str, actor: str = "lead", payload: dict | None = None) -> AgentEvent:
-        event = AgentEvent(str(uuid.uuid4()), self.run_id, time.time(), event_type, actor, payload or {})
+        safe_payload = self.redactor.value(payload or {})
+        event = AgentEvent(str(uuid.uuid4()), self.run_id, time.time(), event_type, actor, safe_payload)
         line = json.dumps(asdict(event), ensure_ascii=False, default=str)
         with self._lock:
             with self.events_path.open("a", encoding="utf-8") as stream:
@@ -82,5 +89,6 @@ class EventStore:
             store = cls.__new__(cls)
             store.root, store.run_id, store.run_dir, store.events_path = root, directory.name, directory, path
             store._lock = threading.Lock()
+            store.redactor = SecretRedactor()
             runs.append(store.summary())
         return runs

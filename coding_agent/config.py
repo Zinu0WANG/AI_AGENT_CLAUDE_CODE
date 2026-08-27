@@ -7,9 +7,26 @@ import yaml
 
 
 DEFAULT_IGNORES = [
-    ".git/**", ".venv/**", "venv/**", "__pycache__/**", "node_modules/**",
-    "build/**", "dist/**", ".runs/**", ".team/**", ".tasks/**", ".plans/**",
+    ".git/**", ".venv/**", "venv/**", "__pycache__/**", ".pytest_cache/**",
+    "node_modules/**", "build/**", "dist/**", ".runs/**", ".team/**",
+    ".tasks/**", ".plans/**",
 ]
+
+
+@dataclass(slots=True)
+class ToolSecurityConfig:
+    protected_read_patterns: list[str] = field(default_factory=lambda: [
+        ".env", ".env.*", "**/*.pem", "**/*.key", "**/credentials*", "**/.ssh/**",
+    ])
+    protected_write_patterns: list[str] = field(default_factory=lambda: [
+        ".git/**", ".runs/**", ".team/**", ".tasks/**", ".agent.yml",
+    ])
+    l1_rate_limit: int = 120
+    l2_rate_limit: int = 30
+    l3_rate_limit: int = 5
+    max_command_timeout: int = 300
+    max_tool_output_bytes: int = 100_000
+    max_file_content_bytes: int = 1_048_576
 
 
 @dataclass(slots=True)
@@ -43,6 +60,7 @@ class AgentConfig:
     team_require_write_scope: bool = True
     model_max_output_tokens: int = 3000
     no_progress_replan_after: int = 3
+    tool_security: ToolSecurityConfig = field(default_factory=ToolSecurityConfig)
 
     @classmethod
     def load(cls, workspace: Path) -> "AgentConfig":
@@ -56,6 +74,16 @@ class AgentConfig:
         unknown = set(raw) - allowed
         if unknown:
             raise ValueError(f"Unknown .agent.yml keys: {', '.join(sorted(unknown))}")
+        security = raw.get("tool_security")
+        if security is not None:
+            if not isinstance(security, dict):
+                raise ValueError("tool_security must contain a mapping")
+            security_allowed = {item.name for item in fields(ToolSecurityConfig)}
+            security_unknown = set(security) - security_allowed
+            if security_unknown:
+                raise ValueError(f"Unknown tool_security keys: {', '.join(sorted(security_unknown))}")
+            raw = dict(raw)
+            raw["tool_security"] = ToolSecurityConfig(**security)
         config = cls(**raw)
         config.ignore_patterns = list(dict.fromkeys(DEFAULT_IGNORES + config.ignore_patterns))
         if config.approval_policy not in {"ask_on_write", "allow_write", "read_only"}:
@@ -103,4 +131,13 @@ class AgentConfig:
             raise ValueError("model_max_output_tokens must be between 256 and 32000")
         if not 1 <= config.no_progress_replan_after <= 10:
             raise ValueError("no_progress_replan_after must be between 1 and 10")
+        security = config.tool_security
+        if not 1 <= security.l3_rate_limit <= security.l2_rate_limit <= security.l1_rate_limit <= 10_000:
+            raise ValueError("tool security rate limits must satisfy 1 <= l3 <= l2 <= l1 <= 10000")
+        if not 1 <= security.max_command_timeout <= 3600:
+            raise ValueError("max_command_timeout must be between 1 and 3600")
+        if not 1_000 <= security.max_tool_output_bytes <= 10_000_000:
+            raise ValueError("max_tool_output_bytes must be between 1000 and 10000000")
+        if not 1_000 <= security.max_file_content_bytes <= 10_000_000:
+            raise ValueError("max_file_content_bytes must be between 1000 and 10000000")
         return config

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from coding_agent.config import AgentConfig
+from coding_agent.config import AgentConfig, DEFAULT_IGNORES
 from coding_agent.context import RepoMap
 from coding_agent.events import EventStore
 from coding_agent.policy import RiskLevel, ToolPolicy
@@ -43,6 +43,11 @@ def test_config_loads_defaults_and_project_overrides(tmp_path: Path):
     assert config.team_require_write_scope is True
     assert config.model_max_output_tokens == 3000
     assert config.no_progress_replan_after == 3
+    assert ".env" in config.tool_security.protected_read_patterns
+    assert ".git/**" in config.tool_security.protected_write_patterns
+    assert config.tool_security.l1_rate_limit == 120
+    assert config.tool_security.l2_rate_limit == 30
+    assert config.tool_security.l3_rate_limit == 5
 
 
 def test_config_rejects_compaction_target_at_or_above_trigger(tmp_path: Path):
@@ -99,10 +104,33 @@ def test_repo_map_ignores_build_and_extracts_python_symbols(tmp_path: Path):
     )
     (tmp_path / "build").mkdir()
     (tmp_path / "build" / "ignored.py").write_text("def hidden(): pass", encoding="utf-8")
+    (tmp_path / "packages" / "demo" / "build").mkdir(parents=True)
+    (tmp_path / "packages" / "demo" / "build" / "nested.py").write_text(
+        "def also_hidden(): pass", encoding="utf-8"
+    )
     repo_map = RepoMap(tmp_path, ignore_patterns=["build/**"])
     rendered = repo_map.render()
     assert "Demo" in rendered and "run" in rendered
     assert "ignored.py" not in rendered
+    assert "nested.py" not in rendered
+
+
+def test_repo_map_ignores_root_and_nested_python_test_caches(tmp_path: Path):
+    generated = [
+        tmp_path / ".pytest_cache" / "v" / "cache" / "nodeids",
+        tmp_path / "packages" / "api" / ".pytest_cache" / "README.md",
+        tmp_path / "__pycache__" / "root.pyc",
+        tmp_path / "tests" / "__pycache__" / "nested.pyc",
+    ]
+    for path in generated:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x00generated")
+    (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
+
+    files = RepoMap(tmp_path, ignore_patterns=DEFAULT_IGNORES).build()["files"]
+
+    assert "app.py" in files
+    assert all(path.relative_to(tmp_path).as_posix() not in files for path in generated)
 
 
 def test_validate_name_rejects_path_traversal():

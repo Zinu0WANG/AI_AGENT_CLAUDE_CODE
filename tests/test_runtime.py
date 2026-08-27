@@ -1,5 +1,8 @@
 import json
+import sys
 from pathlib import Path
+
+import pytest
 
 from coding_agent.config import AgentConfig
 from coding_agent.events import EventStore
@@ -96,10 +99,130 @@ def test_diff_captures_files_changed_by_shell_commands(tmp_path: Path):
          "input": {"command": "python -c \"from pathlib import Path; Path('shell.txt').write_text('created')\""}}]},
         {"stop_reason": "end_turn", "content": [{"type": "text", "text": "Done"}]},
     ])
-    runtime = AgentRuntime(tmp_path, AgentConfig(approval_policy="allow_write"), model, interactive=False)
+    runtime = AgentRuntime(
+        tmp_path, AgentConfig(approval_policy="allow_write"), model,
+        approval_callback=lambda *_: True, interactive=False,
+    )
     result = runtime.run("Create via shell")
     assert "shell.txt" in result.diff
     assert "+created" in result.diff
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "expected"),
+    [
+        (None, b"\x00new", "Binary files /dev/null and b/data.bin differ"),
+        (b"\x00before", b"\x00after", "Binary files a/data.bin and b/data.bin differ"),
+        (b"\xffbefore", None, "Binary files a/data.bin and /dev/null differ"),
+    ],
+)
+def test_diff_summarizes_binary_add_modify_and_delete(
+    tmp_path: Path,
+    before: bytes | None,
+    after: bytes | None,
+    expected: str,
+):
+    path = tmp_path / "data.bin"
+    if before is not None:
+        path.write_bytes(before)
+    registry = ToolRegistry(
+        tmp_path,
+        AgentConfig(approval_policy="allow_write"),
+        EventStore(tmp_path),
+    )
+    if after is None:
+        path.unlink()
+    else:
+        path.write_bytes(after)
+
+    diff = registry.diff()
+
+    assert expected in diff
+    assert "\ufffd" not in diff
+    assert "before" not in diff
+    assert "after" not in diff
+
+
+def test_quality_gate_generated_caches_do_not_appear_in_diff(tmp_path: Path):
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_sample.py").write_text(
+        "def test_ok():\n    assert True\n",
+        encoding="utf-8",
+    )
+    registry = ToolRegistry(
+        tmp_path,
+        AgentConfig(test_commands=[f'"{sys.executable}" -m pytest -q'], approval_policy="allow_write"),
+        EventStore(tmp_path),
+    )
+
+    passed, _ = registry.run_quality_gates()
+
+    assert passed
+    assert registry.diff() == "No agent changes."
+
+
+def test_runtime_diff_contains_only_intended_files_after_pytest(tmp_path: Path):
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tmp_path / "pricing.py").write_text(
+        "def price():\n    return 1\n",
+        encoding="utf-8",
+    )
+    (tests_dir / "test_pricing.py").write_text(
+        "from pricing import price\n\n\ndef test_price():\n    assert price() == 1\n",
+        encoding="utf-8",
+    )
+    model = FakeModel(
+        [
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "edit-source",
+                        "name": "batch_edit",
+                        "input": {
+                            "edits": [
+                                {
+                                    "path": "pricing.py",
+                                    "old_text": "return 1",
+                                    "new_text": "return 2",
+                                },
+                                {
+                                    "path": "tests/test_pricing.py",
+                                    "old_text": "price() == 1",
+                                    "new_text": "price() == 2",
+                                },
+                            ]
+                        },
+                    }
+                ],
+            },
+            {
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "Done"}],
+            },
+        ]
+    )
+    runtime = AgentRuntime(
+        tmp_path,
+        AgentConfig(
+            approval_policy="allow_write",
+            test_commands=[f'"{sys.executable}" -m pytest -q'],
+        ),
+        model,
+        interactive=False,
+        enable_team=False,
+    )
+
+    result = runtime.run("Update pricing and its test")
+
+    assert result.status == "completed"
+    assert "a/pricing.py" in result.diff
+    assert "a/tests/test_pricing.py" in result.diff
+    assert ".pytest_cache" not in result.diff
+    assert "__pycache__" not in result.diff
 
 
 class ArtifactRetrievalModel:
@@ -254,8 +377,8 @@ def test_scoped_teammate_shell_write_requires_explicit_approval(tmp_path: Path):
         actor="worker", allowed_write_scope=["src/**"],
     )
     denied = registry.execute("bash", {"command": "python -c \"from pathlib import Path; Path('x').write_text('x')\""})
-    assert "write scope denied" in denied
-    assert len(calls) == 1
+    assert "role worker is not allowed" in denied
+    assert len(calls) == 0
 
 
 def test_batch_read_uses_cache_and_write_invalidates_it(tmp_path: Path):
@@ -360,7 +483,7 @@ def test_plan_mode_exposes_only_read_tools_and_skips_quality_gates(tmp_path: Pat
     result = runtime.run("计划修改 app.py")
 
     names = {schema["name"] for schema in model.calls[0]["tools"]}
-    assert names == {"bash", "read_file", "read_files", "repo_map", "artifact_read", "artifact_search", "task_list"}
+    assert names == {"read_file", "read_files", "repo_map", "artifact_read", "artifact_search", "task_list"}
     assert result.status == "planned"
     assert result.diff == ""
     assert result.validation == ""

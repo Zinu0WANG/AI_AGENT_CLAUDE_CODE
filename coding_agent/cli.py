@@ -15,7 +15,8 @@ from rich.table import Table
 from .config import AgentConfig
 from .events import EventStore
 from .plans import PlanStore
-from .policy import PolicyDecision, RiskLevel
+from .policy import PolicyDecision
+from .security import ApprovalChoice
 from .runtime import AgentRuntime, AnthropicModel, RunMode, RunResult
 from .state import MessageBus, TaskManager
 
@@ -44,7 +45,7 @@ class AgentCLI:
             kwargs["base_url"] = os.environ["ANTHROPIC_BASE_URL"]
         return AnthropicModel(Anthropic(**kwargs), model_name)
 
-    def approve(self, name: str, arguments: dict, decision: PolicyDecision) -> bool:
+    def approve(self, name: str, arguments: dict, decision: PolicyDecision) -> ApprovalChoice:
         self.console.print(Panel(
             f"Tool: [bold]{name}[/bold]\nRisk: [yellow]{decision.risk.value}[/yellow]\n"
             f"Reason: {decision.reason}\nArguments: {json.dumps(arguments, ensure_ascii=False, indent=2)}\n"
@@ -52,10 +53,9 @@ class AgentCLI:
             title="Application-level approval (not an OS sandbox)", border_style="yellow",
         ))
         answer = self.console.input("Allow? [y] once / [a] all writes this run / [N] deny: ").strip().lower()
-        if answer == "a" and self.last_runtime:
-            self.last_runtime.tools.approve_for_run(RiskLevel.WRITE)
-            return True
-        return answer == "y"
+        if answer == "a":
+            return ApprovalChoice.ALLOW_RUN_WRITES
+        return ApprovalChoice.ALLOW_ONCE if answer == "y" else ApprovalChoice.DENY
 
     def run_prompt(self, prompt: str) -> RunResult:
         runtime = AgentRuntime(self.workspace, self.config, self.model, self.approve)
